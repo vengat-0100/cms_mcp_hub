@@ -1,0 +1,10 @@
+{
+  "connectors": [
+    {
+      "name": "Drupal Connector",
+      "url": "https://ffc4-152-58-33-119.ngrok-free.app/mcp/post",
+      "token": "am52Y2VuZHZpdWVqaW9ydm1hamVrbnZkaWFzbmV2aXVhbmVqdmRuYXNsaWR2bmhsc2VocnZubGFrc2pkdm5sc2FkZmhidm9leWF2bGpkc3ZubGJhaGR2amxiaHNlcml1YWV2cmhsYnZhaGVidmF1eWxlYmhhZWJqaHZiYWxzZGpmdmhlcnVvZWF1bmh5ZmRidmxzYWVyaG91YXNleWh5dnJsaGJmdmVzaGJmdnJ1YXNlcmJ2aG9hZGZvdWh2YWJub2V1cmhiZm9uaGZvYWl1ZXJlYWRzaGJ2bGhqYnNhbGh1ZnZuZWl1cmhhYm5laGRsaXVld2ZoaXdlcnVoZm51b2VxcHFlaWpoYm53ZWhqYmZhO2tzZGpmbmFpZXVybmhoZnV5aGJmcnl1YmVoamNhYm5sZHN2ZXJudWVhZnJpYg==",
+      "description": ""
+    }
+  ]
+}
