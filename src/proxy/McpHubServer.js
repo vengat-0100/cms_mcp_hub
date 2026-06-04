@@ -41,7 +41,9 @@ export class McpHubServer {
       next();
     });
 
-    // Keep track of active SSE transports for session management
+    // Streamable HTTP sessions: sessionId → { server, transport }
+    this.httpSessions = new Map();
+    // Legacy SSE sessions
     this.sseSessions = new Map();
   }
 
@@ -79,18 +81,47 @@ export class McpHubServer {
     const app = this.app;
 
     // ── Streamable HTTP (recommended for Claude.ai) ──────────────────────────
-    app.post('/mcp', async (req, res) => {
+    const handleMcp = async (req, res) => {
+      const sessionId = req.headers['mcp-session-id'];
       try {
-        const server = this._createMcpServer();
-        const transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
-        });
-        await server.connect(transport);
-        await transport.handleRequest(req, res, req.body);
+        if (sessionId && this.httpSessions.has(sessionId)) {
+          // Route to existing session
+          const { transport } = this.httpSessions.get(sessionId);
+          await transport.handleRequest(req, res, req.body);
+        } else if (req.method === 'POST' && !sessionId) {
+          // New session — initialize handshake
+          const server = this._createMcpServer();
+          const transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+          });
+          transport.onclose = () => {
+            if (transport.sessionId) this.httpSessions.delete(transport.sessionId);
+          };
+          await server.connect(transport);
+          await transport.handleRequest(req, res, req.body);
+          if (transport.sessionId) {
+            this.httpSessions.set(transport.sessionId, { server, transport });
+          }
+        } else {
+          res.status(400).json({ error: 'Bad request: missing or unknown session ID' });
+        }
       } catch (err) {
         this.logger.error('[hub] Streamable HTTP error:', err.message);
         if (!res.headersSent) res.status(500).json({ error: err.message });
       }
+    };
+
+    app.post('/mcp', handleMcp);
+    app.get('/mcp', handleMcp);   // SSE stream for server-initiated messages
+
+    app.delete('/mcp', async (req, res) => {
+      const sessionId = req.headers['mcp-session-id'];
+      if (sessionId && this.httpSessions.has(sessionId)) {
+        const { transport } = this.httpSessions.get(sessionId);
+        await transport.close().catch(() => {});
+        this.httpSessions.delete(sessionId);
+      }
+      res.sendStatus(200);
     });
 
     // ── SSE transport — GET /mcp/sse (legacy fallback) ───────────────────────
