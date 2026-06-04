@@ -59,6 +59,11 @@ class DirectHttpClient {
   close()                             {}
 }
 
+/** Sanitize connector name for use in tool names: only [a-zA-Z0-9_-] allowed */
+function safePrefix(name) {
+  return name.replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
 export class ConnectorRegistry {
   constructor() {
     /** @type {Map<string, ConnectorEntry>} name → entry */
@@ -180,7 +185,7 @@ export class ConnectorRegistry {
       // Register each tool in the index under its prefixed name
       let collisions = 0;
       for (const tool of tools) {
-        const prefixed = `${name}__${tool.name}`;
+        const prefixed = `${safePrefix(name)}__${tool.name}`;
         if (this.toolIndex.has(prefixed)) {
           logger.warn(`[hub] Tool name collision: "${prefixed}" already registered`);
           collisions++;
@@ -207,7 +212,7 @@ export class ConnectorRegistry {
 
     // Remove its tools from the index
     for (const tool of entry.tools) {
-      this.toolIndex.delete(`${name}__${tool.name}`);
+      this.toolIndex.delete(`${safePrefix(name)}__${tool.name}`);
     }
 
     try {
@@ -244,7 +249,7 @@ export class ConnectorRegistry {
 
     // Remove old tools from index
     for (const tool of entry.tools) {
-      this.toolIndex.delete(`${name}__${tool.name}`);
+      this.toolIndex.delete(`${safePrefix(name)}__${tool.name}`);
     }
     entry.tools = [];
 
@@ -252,7 +257,7 @@ export class ConnectorRegistry {
       const { tools } = await entry.client.listTools();
       entry.tools = tools;
       for (const tool of tools) {
-        const prefixed = `${name}__${tool.name}`;
+        const prefixed = `${safePrefix(name)}__${tool.name}`;
         this.toolIndex.set(prefixed, { connector: name, originalName: tool.name });
       }
       logger.info(`[hub] "${name}" refreshed — ${tools.length} tools`);
