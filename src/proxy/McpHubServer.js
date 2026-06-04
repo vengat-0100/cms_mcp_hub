@@ -35,7 +35,7 @@ export class McpHubServer {
     this.app.use(express.json());
     this.app.use((req, res, next) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, Mcp-Session-Id');
       if (req.method === 'OPTIONS') return res.sendStatus(204);
       next();
@@ -180,6 +180,17 @@ export class McpHubServer {
       try {
         await this.registry.refreshOne(req.params.name, this.logger);
         res.json(this.registry.getStatus().find(c => c.name === req.params.name));
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    app.patch('/api/connectors/:name', async (req, res) => {
+      try {
+        await this.registry.updateOne(req.params.name, req.body, this.logger);
+        await this.registry.saveConfig();
+        const updated = req.body.name ?? req.params.name;
+        res.json(this.registry.getStatus().find(c => c.name === updated));
       } catch (err) {
         res.status(500).json({ error: err.message });
       }

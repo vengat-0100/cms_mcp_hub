@@ -130,7 +130,7 @@ export class ConnectorRegistry {
       logger.info(`[hub] Connecting to "${name}" at ${url} …`);
 
       const headers = {
-        ...(token ? { Authorization: `Basic ${token}` } : {}),
+        ...(token ? { Authorization: `${token}` } : {}),
         // ngrok free-tier serves an HTML interstitial on first request without this header
         ...(url.includes('ngrok') ? { 'ngrok-skip-browser-warning': '1' } : {}),
       };
@@ -224,6 +224,22 @@ export class ConnectorRegistry {
     return true;
   }
 
+  /** Update connector config and reconnect */
+  async updateOne(name, updates, logger = console) {
+    const entry = this.connectors.get(name);
+    if (!entry) throw new Error(`Connector "${name}" not found`);
+    const newConfig = {
+      name:        updates.name        ?? entry.name,
+      url:         updates.url         ?? entry.url,
+      token:       updates.token       !== undefined ? updates.token : entry.token,
+      description: updates.description ?? entry.description,
+      transport:   updates.transport   ?? entry.preferredTransport,
+      sseUrl:      updates.sseUrl      ?? entry.sseUrl,
+    };
+    await this.disconnectOne(name, logger);
+    await this.connectOne(newConfig, logger);
+  }
+
   /** Fully disconnect then reconnect a connector */
   async reconnectOne(name, logger = console) {
     const entry = this.connectors.get(name);
@@ -306,6 +322,13 @@ export class ConnectorRegistry {
     return [...this.connectors.values()].map(({ name, url, status, tools, error, description, transport }) => ({
       name, url, status, description, transport: transport ?? null,
       toolCount: tools.length,
+      tools: tools.map(t => ({
+        name: t.name,
+        title: t.title ?? t.name,
+        description: t.description ?? '',
+        inputSchema:  t.inputSchema  ?? {},
+        outputSchema: t.outputSchema ?? null,
+      })),
       error: error ?? null,
     }));
   }
