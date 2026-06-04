@@ -33,6 +33,13 @@ export class McpHubServer {
 
     this.app = express();
     this.app.use(express.json());
+    this.app.use((req, res, next) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, Mcp-Session-Id');
+      if (req.method === 'OPTIONS') return res.sendStatus(204);
+      next();
+    });
 
     // Keep track of active SSE transports for session management
     this.sseSessions = new Map();
