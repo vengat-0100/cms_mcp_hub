@@ -44,7 +44,7 @@ export class McpHubServer {
   /** Start listening. Returns a Promise that resolves once the port is bound. */
   start() {
     return new Promise(resolve => {
-      this.httpServer = this.app.listen(this.port, () => {
+      this.httpServer = this.app.listen(this.port, '0.0.0.0', () => {
         this.logger.info(`[hub] MCP Hub running on http://localhost:${this.port}`);
         this.logger.info(`[hub] Landing page  →  http://localhost:${this.port}/`);
         this.logger.info(`[hub] Workspace MCP →  http://localhost:${this.port}/ws/{workspace_id}/mcp`);
