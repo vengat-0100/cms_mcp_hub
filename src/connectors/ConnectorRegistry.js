@@ -39,10 +39,10 @@ class DirectHttpClient {
   }
 
   async _buildHeaders() {
-    const headers = { ...this._headers };
-    if (this._getToken) {
+    const headers = { ...this._headers};
+    if (!this._headers.Authorization && this._getToken) {
       const ssoToken = await this._getToken();
-      if (!ssoToken) headers['Authorization'] = `Bearer ${ssoToken}`;
+      if (ssoToken) headers['Authorization'] = `Bearer ${ssoToken}`;
     }
     return headers;
   }
@@ -53,14 +53,12 @@ class DirectHttpClient {
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
       const headers = await this._buildHeaders();
-      console.log(`[DirectHttpClient] ${method} with params: ${JSON.stringify(params)} with headers: ${JSON.stringify(headers)}`);
       const res = await fetch(this._url, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', ...headers },
         body:    JSON.stringify({ jsonrpc: '2.0', id: ++this._id, method, params }),
         signal:  controller.signal,
       });
-      console.log(`[DirectHttpClient] Response for ${method}:`, res);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (data.error) throw new Error(data.error.message ?? JSON.stringify(data.error));
@@ -174,10 +172,6 @@ export class ConnectorRegistry {
       } else {
         // Auto-detect: direct HTTP → Streamable HTTP → SSE
         try {
-          console.log(url);
-          console.log(headers);
-          console.log(this._getToken);
-          
           activeClient = new DirectHttpClient(url, headers, this._getToken);
           cachedTools = (await activeClient.listTools()).tools; // fast probe, cache result
           usedTransport = 'direct-http';

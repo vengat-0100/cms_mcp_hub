@@ -87,6 +87,9 @@ ${SHARED_CSS}
 .copy-btn{font-size:11px;border:1px solid #e2e8f0;background:#fff;border-radius:5px;padding:3px 8px;cursor:pointer;color:#6366f1;flex-shrink:0;margin-left:6px}
 .warning{font-size:12px;color:#d97706;background:#fffbeb;border:1px solid #fde68a;border-radius:7px;padding:8px 12px;margin-top:10px}
 @media(max-width:640px){.panels{grid-template-columns:1fr}}
+.resume-card{background:linear-gradient(135deg,#f5f3ff,#eff6ff);border:1.5px solid #c4b5fd;border-radius:14px;padding:16px 20px;margin:0 auto 24px;max-width:720px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.resume-ws-name{font-size:15px;font-weight:700;color:#0f172a;margin-bottom:2px}
+.resume-ws-id{font-size:11px;color:#64748b;font-family:'SF Mono','Fira Code',monospace}
 </style></head><body>
 <header>
   <a class="logo" href="/"><div class="logo-icon">⚡</div><div><div class="logo-name">CMS MCP Hub</div><div class="logo-sub">Multi-tenant Connector Gateway</div></div></a>
@@ -95,6 +98,22 @@ ${SHARED_CSS}
   <div class="hero">
     <h2>Connect your CMS to Claude</h2>
     <p>Create a workspace for your organisation, configure your IdP for SSO, and connect Claude.ai to your CMS tools.</p>
+  </div>
+  <div id="resume-card" style="display:none">
+    <div class="resume-card">
+      <div style="display:flex;align-items:center;gap:12px">
+        <div style="width:38px;height:38px;background:linear-gradient(135deg,#6366f1,#8b5cf6);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">⚡</div>
+        <div>
+          <div style="font-size:11.5px;color:#6366f1;font-weight:600;margin-bottom:2px">Last session</div>
+          <div class="resume-ws-name" id="resume-name"></div>
+          <div class="resume-ws-id" id="resume-id"></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-shrink:0">
+        <button class="btn btn-secondary" style="font-size:12px;padding:6px 14px" onclick="clearResume()">Forget</button>
+        <button class="btn btn-primary" style="font-size:13px" onclick="resumeSession()">Resume session →</button>
+      </div>
+    </div>
   </div>
   <div class="panels">
     <!-- Create workspace -->
@@ -163,6 +182,26 @@ async function accessWorkspace(){
   if(res.ok){window.location.href=\`/ws/\${id}/ui\`;}
   else{document.getElementById('access-error').textContent='Invalid workspace ID or admin key';}
 }
+function initResume(){
+  try{
+    const s=JSON.parse(localStorage.getItem('cms_hub_workspace')||'null');
+    if(!s?.id)return;
+    document.getElementById('resume-name').textContent=s.name||'Workspace';
+    document.getElementById('resume-id').textContent=s.id;
+    document.getElementById('resume-card').style.display='';
+  }catch{}
+}
+function resumeSession(){
+  try{
+    const s=JSON.parse(localStorage.getItem('cms_hub_workspace')||'null');
+    if(s?.id)window.location.href=\`/ws/\${s.id}/ui\`;
+  }catch{}
+}
+function clearResume(){
+  localStorage.removeItem('cms_hub_workspace');
+  document.getElementById('resume-card').style.display='none';
+}
+initResume();
 document.addEventListener('keydown',e=>{if(e.key==='Enter')accessWorkspace()});
 </script></body></html>`;
 
@@ -378,6 +417,7 @@ async function load(){
 
     renderSsoStatus(sso,idp);
     renderConnectors(_connectors);
+    localStorage.setItem('cms_hub_workspace',JSON.stringify({id:WS_ID,name:health.workspace}));
   }catch(e){
     document.getElementById('hub-status').textContent='✕ Offline';
     console.error('[hub] load error:', e);
@@ -642,6 +682,7 @@ function copyMcpUrl(){navigator.clipboard.writeText(document.getElementById('mcp
 
 async function logout(){
   await api('/auth/admin/logout',{method:'POST',body:'{}'});
+  localStorage.removeItem('cms_hub_workspace');
   window.location.href='/';
 }
 
@@ -667,5 +708,4 @@ document.addEventListener('keydown',e=>{
 });
 
 load();
-setInterval(load,15000);
 </script></body></html>`;
