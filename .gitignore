@@ -1,1 +1,5 @@
 .vendor
+node_modules/
+# Workspace data — encrypted tokens and secrets, never commit
+data/workspaces/*/
+!data/workspaces/.gitkeep

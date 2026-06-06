@@ -26,22 +26,41 @@ const CONFIG_PATH = path.resolve(__dirname, '../../connectors.json');
 const FETCH_TIMEOUT_MS = 120_000; // 2 min — Drupal cold-start can be slow
 
 class DirectHttpClient {
-  constructor(url, headers) {
-    this._url = url;
-    this._headers = headers;
-    this._id = 0;
+  /**
+   * @param {string} url
+   * @param {Record<string,string>} headers  Static headers (e.g. Basic auth)
+   * @param {(() => Promise<string|null>)|null} getToken  Optional SSO token provider
+   */
+  constructor(url, headers, getToken = null) {
+    this._url      = url;
+    this._headers  = headers;
+    this._getToken = getToken;
+    this._id       = 0;
+  }
+
+  async _buildHeaders() {
+    const headers = { ...this._headers };
+    if (this._getToken) {
+      const ssoToken = await this._getToken();
+      if (!ssoToken) headers['Authorization'] = `Bearer ${ssoToken}`;
+    }
+    return headers;
   }
 
   async _rpc(method, params = {}) {
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
+      const headers = await this._buildHeaders();
+      console.log(`[DirectHttpClient] ${method} with params: ${JSON.stringify(params)} with headers: ${JSON.stringify(headers)}`);
       const res = await fetch(this._url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', ...this._headers },
-        body: JSON.stringify({ jsonrpc: '2.0', id: ++this._id, method, params }),
-        signal: controller.signal,
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', ...headers },
+        body:    JSON.stringify({ jsonrpc: '2.0', id: ++this._id, method, params }),
+        signal:  controller.signal,
       });
+      console.log(`[DirectHttpClient] Response for ${method}:`, res);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (data.error) throw new Error(data.error.message ?? JSON.stringify(data.error));
@@ -65,20 +84,22 @@ function safePrefix(name) {
 }
 
 export class ConnectorRegistry {
-  constructor() {
-    /** @type {Map<string, ConnectorEntry>} name → entry */
-    this.connectors = new Map();
-    /** @type {Map<string, {connector: string, originalName: string}>} prefixed tool name → routing info */
-    this.toolIndex = new Map();
+  /**
+   * @param {{ configPath?: string, getToken?: () => Promise<string|null> }} opts
+   */
+  constructor({ configPath, getToken } = {}) {
+    this.connectors  = new Map();
+    this.toolIndex   = new Map();
+    this._configPath = configPath ?? path.resolve(__dirname, '../../connectors.json');
+    this._getToken   = getToken   ?? null;
   }
 
   // ─── Config ────────────────────────────────────────────────────────────────
 
   async loadConfig() {
     try {
-      const raw = await fs.readFile(CONFIG_PATH, 'utf-8');
-      const config = JSON.parse(raw);
-      return config.connectors ?? [];
+      const raw = await fs.readFile(this._configPath, 'utf-8');
+      return JSON.parse(raw).connectors ?? [];
     } catch {
       return [];
     }
@@ -90,7 +111,8 @@ export class ConnectorRegistry {
       ...(sseUrl ? { sseUrl } : {}),
       ...(preferredTransport ? { transport: preferredTransport } : {}),
     }));
-    await fs.writeFile(CONFIG_PATH, JSON.stringify({ connectors }, null, 2));
+    await fs.mkdir(path.dirname(this._configPath), { recursive: true });
+    await fs.writeFile(this._configPath, JSON.stringify({ connectors }, null, 2));
   }
 
   // ─── Lifecycle ─────────────────────────────────────────────────────────────
@@ -125,7 +147,6 @@ export class ConnectorRegistry {
       error: null,
     };
     this.connectors.set(name, entry);
-
     try {
       logger.info(`[hub] Connecting to "${name}" at ${url} …`);
 
@@ -153,7 +174,11 @@ export class ConnectorRegistry {
       } else {
         // Auto-detect: direct HTTP → Streamable HTTP → SSE
         try {
-          activeClient = new DirectHttpClient(url, headers);
+          console.log(url);
+          console.log(headers);
+          console.log(this._getToken);
+          
+          activeClient = new DirectHttpClient(url, headers, this._getToken);
           cachedTools = (await activeClient.listTools()).tools; // fast probe, cache result
           usedTransport = 'direct-http';
         } catch (directErr) {

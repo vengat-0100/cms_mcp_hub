@@ -1,44 +1,35 @@
 #!/usr/bin/env node
-/**
- * CMS MCP Hub — entry point
- *
- * Usage:
- *   node src/index.js              # default port 3456
- *   PORT=4000 node src/index.js    # custom port
- */
+import { WorkspaceRegistry } from './workspaces/WorkspaceRegistry.js';
+import { McpHubServer }      from './proxy/McpHubServer.js';
+import { generateKey }       from './workspaces/TokenStore.js';
+import dotenv from 'dotenv';
 
-import { ConnectorRegistry } from './connectors/ConnectorRegistry.js';
-import { McpHubServer } from './proxy/McpHubServer.js';
+const env = dotenv.config({path: '.env.dev'}).parsed;
 
-const PORT = parseInt(process.env.PORT ?? '3456', 10);
+const PORT = parseInt(process.env.PORT ?? env.PORT ?? '3456', 10);
 
-// Simple coloured logger
 const logger = {
-  info:  (...a) => console.log('\x1b[36m[info]\x1b[0m', ...a),
-  warn:  (...a) => console.warn('\x1b[33m[warn]\x1b[0m', ...a),
+  info:  (...a) => console.log('\x1b[36m[info]\x1b[0m',  ...a),
+  warn:  (...a) => console.warn('\x1b[33m[warn]\x1b[0m',  ...a),
   error: (...a) => console.error('\x1b[31m[error]\x1b[0m', ...a),
 };
 
 async function main() {
+  if (!process.env.ENCRYPTION_KEY || !env.ENCRYPTION_KEY) {
+    logger.warn('ENCRYPTION_KEY not set. Generate one with:');
+    logger.warn('node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
+    logger.warn('Then set it in the project environemnt file.');
+  }
+
   logger.info('CMS MCP Hub starting…');
 
-  const registry = new ConnectorRegistry();
-  await registry.initialize(logger);
-
-  const hub = new McpHubServer(registry, { port: PORT, logger });
+  const workspaceRegistry = new WorkspaceRegistry();
+  const hub = new McpHubServer(workspaceRegistry, { port: PORT, logger });
   await hub.start();
 
-  // Graceful shutdown
   for (const sig of ['SIGINT', 'SIGTERM']) {
-    process.on(sig, async () => {
-      logger.info(`\nShutting down (${sig})…`);
-      hub.stop();
-      process.exit(0);
-    });
+    process.on(sig, () => { logger.info(`Shutting down (${sig})…`); hub.stop(); process.exit(0); });
   }
 }
 
-main().catch((err) => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+main().catch(err => { console.error('Fatal:', err); process.exit(1); });
