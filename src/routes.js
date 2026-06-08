@@ -17,9 +17,10 @@
  *   (middleware/auth)  — session cookie helpers, requireAdmin, workspaceParam
  */
 
-import express                 from 'express';
-import { createWebUiRouter }   from './web/ui.js';
-import { McpSessionManager }   from './services/McpSessionManager.js';
+import express                            from 'express';
+import { createWebUiRouter }              from './web/ui.js';
+import { McpSessionManager }              from './services/McpSessionManager.js';
+import { createOAuthRouter, stateStore, userTokens } from './routes/oauth.js';
 import {
   requireAdmin,
   workspaceParam,
@@ -56,6 +57,9 @@ export function createRouter(workspaceRegistry, oauthManager, logger) {
 
   // Validate :workspace_id and attach req.workspace before any workspace route runs
   router.param('workspace_id', workspaceParam(workspaceRegistry));
+
+  // ── OAuth 2.0 AS endpoints (discovery, authorize, callback, token) ─────────
+  router.use(createOAuthRouter(workspaceRegistry));
 
   // ── Static pages ───────────────────────────────────────────────────────────
   // Served with Cache-Control: no-store to prevent browser caching stale JS
@@ -107,62 +111,61 @@ export function createRouter(workspaceRegistry, oauthManager, logger) {
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // SSO / OAUTH 2.0
+  // SSO / OAUTH 2.0  (admin test + per-user flows unified via /oauth/callback)
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
    * GET /ws/:workspace_id/auth/sso/start
-   * Generate a random state token (10-min TTL), build the IdP authorization URL,
-   * and redirect the browser to begin the OAuth 2.0 Authorization Code flow.
+   * Admin triggers an IdP test from the dashboard.
+   * Creates an admin-test OAuth state (is_admin_test=true, no PKCE) and redirects
+   * to the IdP. The unified /oauth/callback detects the flag, decodes the response,
+   * stores a temp result, and redirects the popup back with ?idp_test=<result_id>.
    * Auth: admin session
    */
   router.get('/ws/:workspace_id/auth/sso/start', requireAdmin, (req, res) => {
     const { idp } = req.workspace;
     if (!idp?.authorize_url) return res.status(400).json({ error: 'IdP not configured' });
-    res.redirect(oauthManager.buildStartUrl(req.params.workspace_id, idp, baseUrl(req)));
-  });
-
-  /**
-   * GET /ws/:workspace_id/auth/callback
-   * OAuth 2.0 redirect callback from the IdP.
-   * Validates the state token, exchanges the code for access + refresh tokens,
-   * and stores them AES-256-GCM encrypted on disk.
-   * On success: redirects to /ws/:id/ui?sso=ok (popup posts message and closes itself).
-   * On failure: redirects to /ws/:id/ui?sso_error=<message>.
-   * Auth: none — called directly by the IdP
-   */
-  router.get('/ws/:workspace_id/auth/callback', async (req, res) => {
-    const { code, state, error } = req.query;
-    const id = req.params.workspace_id;
-    if (error) return res.redirect(`/ws/${id}/ui?sso_error=${encodeURIComponent(error)}`);
-    try {
-      await oauthManager.handleCallback(code, state, workspaceRegistry, baseUrl(req));
-      res.redirect(`/ws/${id}/ui?sso=ok`);
-    } catch (err) {
-      logger.error('[hub] OAuth callback error:', err.message);
-      res.redirect(`/ws/${id}/ui?sso_error=${encodeURIComponent(err.message)}`);
-    }
+    const hub_state = stateStore.createAdminTestState(req.params.workspace_id);
+    const params = new URLSearchParams({
+      response_type: 'code',
+      client_id:     idp.client_id,
+      redirect_uri:  `${baseUrl(req)}/ws/${req.params.workspace_id}/oauth/callback`,
+      scope:         idp.scope ?? 'openid profile email',
+      state:         hub_state,
+    });
+    res.redirect(`${idp.authorize_url}?${params}`);
   });
 
   /**
    * GET /ws/:workspace_id/auth/sso/status
-   * Return the current SSO token status for this workspace:
-   * { connected, expired, expires_at, has_refresh, sub, token_type }
+   * Return all users who have authenticated via SSO for this workspace.
+   * { users: [{ sub, email, name, expires_at, updated_at, token_type }] }
    * Auth: admin session
    */
-  router.get('/ws/:workspace_id/auth/sso/status', requireAdmin, wrap(async (req, res) => {
-    res.json(await workspaceRegistry.tokenStatus(req.params.workspace_id));
-  }));
+  router.get('/ws/:workspace_id/auth/sso/status', requireAdmin, (req, res) => {
+    res.json({ users: userTokens.listUsers(req.params.workspace_id) });
+  });
 
   /**
-   * POST /ws/:workspace_id/auth/sso/disconnect
-   * Delete the stored service token, disconnecting SSO for this workspace.
+   * GET /ws/:workspace_id/auth/sso/test-result/:id
+   * Fetch and consume a pending admin IdP test result (TTL: 5 min, single-use).
    * Auth: admin session
    */
-  router.post('/ws/:workspace_id/auth/sso/disconnect', requireAdmin, wrap(async (req, res) => {
-    await workspaceRegistry.deleteToken(req.params.workspace_id, '_service');
+  router.get('/ws/:workspace_id/auth/sso/test-result/:id', requireAdmin, (req, res) => {
+    const result = stateStore.consumeTestResult(req.params.id);
+    if (!result) return res.status(404).json({ error: 'Result not found or expired' });
+    res.json(result);
+  });
+
+  /**
+   * DELETE /ws/:workspace_id/auth/sso/users/:sub
+   * Revoke a specific user's stored IdP token (forces re-authentication on next MCP call).
+   * Auth: admin session
+   */
+  router.delete('/ws/:workspace_id/auth/sso/users/:sub', requireAdmin, (req, res) => {
+    userTokens.deleteToken(req.params.workspace_id, decodeURIComponent(req.params.sub));
     res.json({ ok: true });
-  }));
+  });
 
   // ═══════════════════════════════════════════════════════════════════════════
   // HEALTH
@@ -177,13 +180,12 @@ export function createRouter(workspaceRegistry, oauthManager, logger) {
    */
   router.get('/ws/:workspace_id/health', wrap(async (req, res) => {
     const registry = await workspaceRegistry.getRegistry(req.params.workspace_id, logger);
-    const sso      = await workspaceRegistry.tokenStatus(req.params.workspace_id);
     res.json({
-      status:     'ok',
-      workspace:  req.workspace.name,
-      sso,
-      connectors: registry?.getStatus()         ?? [],
-      totalTools: registry?.getAllTools().length ?? 0,
+      status:          'ok',
+      workspace:       req.workspace.name,
+      sso:             { connected_users: userTokens.listUsers(req.params.workspace_id).length },
+      connectors:      registry?.getStatus()         ?? [],
+      totalTools:      registry?.getAllTools().length ?? 0,
     });
   }));
 
@@ -213,7 +215,6 @@ export function createRouter(workspaceRegistry, oauthManager, logger) {
     if (!name || !url) return res.status(400).json({ error: 'name and url required' });
     const registry = await workspaceRegistry.getRegistry(req.params.workspace_id, logger);
     await registry.connectOne({ name, url, token, description, transport, sseUrl }, logger);
-    await registry.saveConfig();
     res.json(registry.getStatus().find(c => c.name === name));
   }));
 
@@ -226,7 +227,6 @@ export function createRouter(workspaceRegistry, oauthManager, logger) {
   router.patch('/ws/:workspace_id/api/connectors/:name', requireAdmin, wrap(async (req, res) => {
     const registry    = await workspaceRegistry.getRegistry(req.params.workspace_id, logger);
     await registry.updateOne(req.params.name, req.body, logger);
-    await registry.saveConfig();
     const updatedName = req.body.name ?? req.params.name;
     res.json(registry.getStatus().find(c => c.name === updatedName));
   }));
@@ -240,7 +240,6 @@ export function createRouter(workspaceRegistry, oauthManager, logger) {
     const registry = await workspaceRegistry.getRegistry(req.params.workspace_id, logger);
     const removed  = await registry.disconnectOne(req.params.name, logger);
     if (!removed) return res.status(404).json({ error: 'Connector not found' });
-    await registry.saveConfig();
     res.json({ ok: true });
   }));
 

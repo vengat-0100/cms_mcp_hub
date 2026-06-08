@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { WorkspaceRegistry } from './workspaces/WorkspaceRegistry.js';
 import { McpHubServer }      from './proxy/McpHubServer.js';
-import { generateKey }       from './workspaces/TokenStore.js';
 import dotenv from 'dotenv';
 
 const env = dotenv.config({path: '.env.dev'}).parsed;

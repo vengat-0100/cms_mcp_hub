@@ -240,6 +240,13 @@ ${SHARED_CSS}
 .ti-val{font-size:12px;color:#0f172a;font-family:'SF Mono','Fira Code',monospace;text-align:right;word-break:break-all}
 .ti-ok{color:#16a34a}.ti-err{color:#dc2626}
 .expiry-hint{font-size:10px;color:#64748b;margin-left:5px;font-family:inherit}
+.users-table{width:100%;border-collapse:collapse;font-size:12px}
+.users-table th{font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.06em;padding:6px 10px;text-align:left;border-bottom:1.5px solid #e2e8f0}
+.users-table td{padding:8px 10px;border-bottom:1px solid #f1f5f9;color:#0f172a;vertical-align:middle}
+.users-table tr:last-child td{border-bottom:none}
+.users-table tr:hover td{background:#f8fafc}
+.tr-claims{background:#f8fafc;border-radius:10px;padding:14px 16px;font-size:12px;font-family:'SF Mono','Fira Code',monospace;overflow:auto;max-height:260px;white-space:pre-wrap;word-break:break-all;border:1.5px solid #e2e8f0;margin-top:6px}
+.tr-section{font-size:11px;font-weight:700;color:#6366f1;text-transform:uppercase;letter-spacing:.06em;margin:14px 0 6px}
 
 /* Connector cards */
 .card-main{display:flex}
@@ -300,7 +307,7 @@ ${SHARED_CSS}
     <span class="section-title">Identity Provider (SSO)</span>
     <div style="display:flex;gap:8px">
       <button class="btn btn-secondary" onclick="openIdpModal()">⚙ Configure IdP</button>
-      <button class="btn btn-primary" id="sso-btn" onclick="startSSO()" disabled style="opacity:.5">🔐 Connect via SSO</button>
+      <button class="btn btn-primary" id="sso-btn" onclick="testIdp()" disabled style="opacity:.5">🧪 Test IdP</button>
     </div>
   </div>
   <div class="sso-card" id="sso-card">
@@ -332,11 +339,12 @@ ${SHARED_CSS}
       <div class="fg"><label>Provider Name</label><input id="idp-name" placeholder="e.g. Okta, Azure AD, Keycloak"></div>
       <div class="fg"><label>Scope</label><input id="idp-scope" placeholder="openid profile email"></div>
       <div class="fg full">
-        <label>Callback URL <span style="font-weight:400;color:#94a3b8">(register this with your IdP)</span></label>
+        <label>Redirect URI <span style="font-weight:400;color:#94a3b8">(register this with your IdP)</span></label>
         <div style="display:flex;gap:8px">
           <input id="idp-callback-url" readonly style="background:#f8fafc;color:#6366f1;font-family:'SF Mono','Fira Code',monospace;font-size:12px;cursor:default">
-          <button type="button" class="btn btn-secondary" style="white-space:nowrap;flex-shrink:0" onclick="copyCallbackUrl()">Copy</button>
+          <button type="button" class="btn btn-secondary" style="white-space:nowrap;flex-shrink:0" onclick="copyCallbackUrl('idp-callback-url')">Copy</button>
         </div>
+        <div style="font-size:11px;color:#64748b;margin-top:4px">Used for both admin config test and end-user Claude.ai connections.</div>
       </div>
       <div class="fg full"><label>Authorization URL *</label><input id="idp-auth-url" placeholder="https://idp.example.com/oauth/authorize"></div>
       <div class="fg full"><label>Token URL *</label><input id="idp-token-url" placeholder="https://idp.example.com/oauth/token"></div>
@@ -347,6 +355,15 @@ ${SHARED_CSS}
       <button class="btn btn-secondary" onclick="closeIdpModal()">Cancel</button>
       <button class="btn btn-primary" onclick="saveIdp()">Save IdP</button>
     </div>
+  </div>
+</div>
+
+<!-- IdP test result modal -->
+<div class="backdrop" id="test-result-backdrop" onclick="if(event.target===this)closeTestResult()">
+  <div class="modal" style="max-width:580px">
+    <div class="modal-hd"><span class="modal-title">IdP Test Result</span><button class="btn-x" onclick="closeTestResult()">✕</button></div>
+    <div id="test-result-body" style="padding:4px 0 8px"></div>
+    <div class="form-foot"><button class="btn btn-primary" onclick="closeTestResult()">Close</button></div>
   </div>
 </div>
 
@@ -412,7 +429,7 @@ async function load(){
     document.getElementById('s-total').textContent=_connectors.length;
     document.getElementById('s-conn').textContent=_connectors.filter(c=>c.status==='connected').length;
     document.getElementById('s-tools').textContent=health.totalTools;
-    document.getElementById('s-sso').textContent=sso.connected?(sso.expired?'Expired':'Active'):'None';
+    document.getElementById('s-sso').textContent=(sso.users?.length??0)+' users';
     document.getElementById('mcp-url').textContent=\`\${location.origin}/ws/\${WS_ID}/mcp\`;
 
     renderSsoStatus(sso,idp);
@@ -452,43 +469,41 @@ function renderSsoStatus(sso,idp){
   const btn=document.getElementById('sso-btn');
   if(!idp){
     el.innerHTML='<div style="font-size:13px;color:#94a3b8">No IdP configured. Click "Configure IdP" to set up SSO.</div>';
-    btn.disabled=true;btn.style.opacity='.5';btn.textContent='🔐 Connect via SSO';
+    btn.disabled=true;btn.style.opacity='.5';
     return;
   }
   btn.disabled=false;btn.style.opacity='1';
-  btn.textContent=sso.connected&&!sso.expired?'🔄 Reconnect SSO':'🔐 Connect via SSO';
 
-  const statusPill=sso.connected&&!sso.expired
-    ?'<span class="pill pill-connected">● Active</span>'
-    :sso.connected&&sso.expired
-      ?'<span class="pill pill-error">⚠ Expired</span>'
-      :'<span class="pill" style="background:#f8fafc;color:#64748b;border-color:#e2e8f0">Not connected</span>';
-
-  const expiry=sso.expires_at?new Date(sso.expires_at).toLocaleString():'—';
-  const hint=sso.expires_at?formatExpiry(sso.expires_at):'';
+  const users=sso.users??[];
+  const usersHtml=users.length===0
+    ?'<div style="font-size:12px;color:#94a3b8;padding:10px 0">No users connected yet. Users authenticate when they connect Claude.ai to the MCP endpoint.</div>'
+    :\`<table class="users-table">
+        <thead><tr><th>User</th><th>Name</th><th>Token type</th><th>Token status</th><th></th></tr></thead>
+        <tbody>\${users.map(u=>{
+          const exp=u.expires_at?formatExpiry(u.expires_at):'—';
+          const expired=u.expires_at&&Date.now()>u.expires_at;
+          return \`<tr>
+            <td>\${esc(u.email||u.sub)}</td>
+            <td style="color:#64748b">\${esc(u.name||'—')}</td>
+            <td>\${esc(u.token_type||'Bearer')}</td>
+            <td class="\${expired?'ti-err':'ti-ok'}">\${esc(exp)}</td>
+            <td><button class="btn btn-secondary" style="font-size:11px;padding:3px 9px;color:#dc2626;border-color:#fca5a5" onclick="revokeUser('\${esc(u.sub)}')">Revoke</button></td>
+          </tr>\`;
+        }).join('')}</tbody>
+      </table>\`;
 
   el.innerHTML=\`
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:20px">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:20px;margin-bottom:14px">
       <div class="idp-grid" style="flex:1;min-width:220px">
-        \${idp.name?'<div class="idp-row" style="grid-column:1/-1"><span class="idp-label">Provider</span><span class="idp-val" style="color:#6366f1;font-family:inherit;font-weight:600">'+esc(idp.name)+'</span></div>':''}
+        \${idp.name?'<div class="idp-row" style="grid-column:1/-1"><span class="idp-label">Provider</span><span class="idp-val" style="color:#6366f1;font-weight:600">'+esc(idp.name)+'</span></div>':''}
         <div class="idp-row"><span class="idp-label">Auth URL</span><span class="idp-val">\${esc(idp.authorize_url||'—')}</span></div>
         <div class="idp-row"><span class="idp-label">Token URL</span><span class="idp-val">\${esc(idp.token_url||'—')}</span></div>
         <div class="idp-row"><span class="idp-label">Client ID</span><span class="idp-val">\${esc(idp.client_id||'—')}</span></div>
         <div class="idp-row"><span class="idp-label">Scope</span><span class="idp-val">\${esc(idp.scope||'—')}</span></div>
       </div>
-      <div style="flex-shrink:0;min-width:210px">
-        <div style="margin-bottom:10px">\${statusPill}</div>
-        \${sso.connected?\`
-          <div class="token-info-box">
-            \${sso.sub?'<div class="ti-row"><span class="ti-lbl">User</span><span class="ti-val">'+esc(sso.sub)+'</span></div>':''}
-            <div class="ti-row"><span class="ti-lbl">Type</span><span class="ti-val">\${esc(sso.token_type||'Bearer')}</span></div>
-            <div class="ti-row"><span class="ti-lbl">Expires</span><span class="ti-val \${sso.expired?'ti-err':''}">\${esc(expiry)}\${hint?'<span class="expiry-hint">('+hint+')</span>':''}</span></div>
-            <div class="ti-row"><span class="ti-lbl">Refresh</span><span class="ti-val \${sso.has_refresh?'ti-ok':'ti-err'}">\${sso.has_refresh?'✓ Available':'✕ None'}</span></div>
-          </div>
-          <button class="btn btn-danger" style="font-size:12px;padding:5px 12px;margin-top:10px;width:100%" onclick="disconnectSSO()">Disconnect SSO</button>
-        \`:''}
-      </div>
-    </div>\`;
+    </div>
+    <div style="font-size:12px;font-weight:600;color:#0f172a;margin-bottom:8px">Connected users (\${users.length})</div>
+    \${usersHtml}\`;
 }
 
 function renderConnectors(connectors){
@@ -534,31 +549,65 @@ function renderConnectors(connectors){
 }
 
 // ── SSO ───────────────────────────────────────────────────────────────────────
-function startSSO(){
+function testIdp(){
   const w=600,h=720,left=Math.round(screen.width/2-w/2),top=Math.round(screen.height/2-h/2);
-  const popup=window.open(\`/ws/\${WS_ID}/auth/sso/start\`,'sso-login',
+  const popup=window.open(\`/ws/\${WS_ID}/auth/sso/start\`,'idp-test',
     \`width=\${w},height=\${h},left=\${left},top=\${top},toolbar=0,menubar=0,location=0,resizable=1\`);
-  if(!popup){toast('Allow popups for this page to use SSO','err');return;}
+  if(!popup){toast('Allow popups for this page to test IdP','err');return;}
   const onMsg=e=>{
-    if(e.origin!==location.origin||e.data?.type!=='sso-complete')return;
+    if(e.origin!==location.origin)return;
     window.removeEventListener('message',onMsg);
-    if(e.data.status==='ok'){toast('SSO connected successfully','ok');load();}
-    else toast('SSO error: '+(e.data.error||'Unknown error'),'err');
+    if(e.data?.type==='idp-test-result')  showTestResult(e.data.result_id);
+    else if(e.data?.type==='idp-test-error') toast('IdP error: '+(e.data.error||'Unknown error'),'err');
   };
   window.addEventListener('message',onMsg);
 }
 
-async function disconnectSSO(){
-  if(!confirm('Disconnect SSO? Claude.ai requests will stop using the SSO token.'))return;
-  await api('/auth/sso/disconnect',{method:'POST',body:'{}'});
-  toast('SSO disconnected');load();
+async function showTestResult(id){
+  const res=await api(\`/auth/sso/test-result/\${id}\`);
+  if(!res.ok){toast('Could not retrieve test result','err');return;}
+  const d=await res.json();
+  const body=document.getElementById('test-result-body');
+  const claimsJson=JSON.stringify(d.claims,null,2);
+  body.innerHTML=\`
+    <div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:10px;padding:12px 16px;display:flex;align-items:center;gap:10px;margin-bottom:14px">
+      <span style="font-size:22px">✅</span>
+      <div><div style="font-size:13px;font-weight:700;color:#16a34a">Authentication successful</div>
+      <div style="font-size:12px;color:#15803d">Your IdP configuration is working correctly.</div></div>
+    </div>
+    <div class="tr-section">Identity</div>
+    <div class="token-info-box">
+      <div class="ti-row"><span class="ti-lbl">Subject (sub)</span><span class="ti-val">\${esc(d.identity?.sub||'—')}</span></div>
+      <div class="ti-row"><span class="ti-lbl">Email</span><span class="ti-val">\${esc(d.identity?.email||'—')}</span></div>
+      <div class="ti-row"><span class="ti-lbl">Name</span><span class="ti-val">\${esc(d.identity?.name||'—')}</span></div>
+    </div>
+    <div class="tr-section">Token Info</div>
+    <div class="token-info-box">
+      <div class="ti-row"><span class="ti-lbl">Type</span><span class="ti-val">\${esc(d.token_info?.type||'Bearer')}</span></div>
+      <div class="ti-row"><span class="ti-lbl">Expires in</span><span class="ti-val">\${d.token_info?.expires_in!=null?d.token_info.expires_in+'s':'—'}</span></div>
+      <div class="ti-row"><span class="ti-lbl">Scope</span><span class="ti-val">\${esc(d.token_info?.scope||'—')}</span></div>
+      <div class="ti-row"><span class="ti-lbl">Access token</span><span class="ti-val">\${esc(d.token_info?.access_token_preview||'—')}</span></div>
+      <div class="ti-row"><span class="ti-lbl">Refresh token</span><span class="ti-val \${d.token_info?.has_refresh_token?'ti-ok':'ti-err'}">\${d.token_info?.has_refresh_token?'✓ Received':'✕ Not received'}</span></div>
+      <div class="ti-row"><span class="ti-lbl">ID token</span><span class="ti-val \${d.token_info?.has_id_token?'ti-ok':'ti-err'}">\${d.token_info?.has_id_token?'✓ Received':'✕ Not received'}</span></div>
+    </div>
+    <div class="tr-section">All Claims</div>
+    <pre class="tr-claims">\${esc(claimsJson)}</pre>\`;
+  document.getElementById('test-result-backdrop').classList.add('open');
+}
+function closeTestResult(){document.getElementById('test-result-backdrop').classList.remove('open')}
+
+async function revokeUser(sub){
+  if(!confirm(\`Revoke token for \${sub}? They will need to reconnect.\`))return;
+  const res=await api(\`/auth/sso/users/\${encodeURIComponent(sub)}\`,{method:'DELETE'});
+  if(res.ok){toast('Token revoked','ok');load();}
+  else toast('Failed to revoke','err');
 }
 
 // ── IdP modal ─────────────────────────────────────────────────────────────────
 async function openIdpModal(){
   const idp=await api('/api/idp').then(r=>r.json()).catch(()=>null);
   document.getElementById('idp-name').value        =idp?.name??'';
-  document.getElementById('idp-callback-url').value=\`\${location.origin}/ws/\${WS_ID}/auth/callback\`;
+  document.getElementById('idp-callback-url').value=\`\${location.origin}/ws/\${WS_ID}/oauth/callback\`;
   document.getElementById('idp-auth-url').value    =idp?.authorize_url??'';
   document.getElementById('idp-token-url').value   =idp?.token_url??'';
   document.getElementById('idp-client-id').value   =idp?.client_id??'';
@@ -568,7 +617,7 @@ async function openIdpModal(){
   setTimeout(()=>document.getElementById('idp-name').focus(),120);
 }
 function closeIdpModal(){document.getElementById('idp-backdrop').classList.remove('open')}
-function copyCallbackUrl(){navigator.clipboard.writeText(document.getElementById('idp-callback-url').value);toast('Callback URL copied','ok')}
+function copyCallbackUrl(id){navigator.clipboard.writeText(document.getElementById(id).value);toast('Copied','ok')}
 
 async function saveIdp(){
   const body={
@@ -686,17 +735,18 @@ async function logout(){
   window.location.href='/';
 }
 
-// Handle SSO redirect params — detect if we are loaded inside the OAuth popup
+// Handle redirect params — detect if loaded inside a popup (admin test or future flows)
 const params=new URLSearchParams(location.search);
 if(window.opener){
-  if(params.get('sso')==='ok'){
-    window.opener.postMessage({type:'sso-complete',status:'ok'},location.origin);
+  if(params.get('idp_test')){
+    window.opener.postMessage({type:'idp-test-result',result_id:params.get('idp_test')},location.origin);
     window.close();
-  }else if(params.get('sso_error')){
-    window.opener.postMessage({type:'sso-complete',status:'error',error:params.get('sso_error')},location.origin);
+  }else if(params.get('idp_test_error')){
+    window.opener.postMessage({type:'idp-test-error',error:params.get('idp_test_error')},location.origin);
     window.close();
   }
 }else{
+  // Legacy sso params (kept for safety, can be removed later)
   if(params.get('sso')==='ok')setTimeout(()=>toast('SSO connected successfully','ok'),300);
   if(params.get('sso_error'))setTimeout(()=>toast('SSO error: '+params.get('sso_error'),'err'),300);
 }

@@ -12,7 +12,6 @@
  */
 
 import express          from 'express';
-import { OAuthManager } from '../workspaces/OAuthManager.js';
 import { createRouter } from '../routes.js';
 
 export class McpHubServer {
@@ -38,7 +37,7 @@ export class McpHubServer {
     });
 
     // ── Routes ───────────────────────────────────────────────────────────────
-    this.app.use(createRouter(workspaceRegistry, new OAuthManager(), logger));
+    this.app.use(createRouter(workspaceRegistry, null, logger));
   }
 
   /** Start listening. Returns a Promise that resolves once the port is bound. */

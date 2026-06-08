@@ -1,116 +1,102 @@
 /**
- * services/McpSessionManager.js — MCP Streamable HTTP session lifecycle.
+ * services/McpSessionManager.js — Direct JSON-RPC handler (no SDK server/transport).
  *
- * Each Claude.ai connection creates a session keyed by `${workspace_id}:${session_id}`.
- * Sessions live in memory and are removed when the transport closes.
+ * Every POST to /ws/:id/mcp:
+ *   1. Verify Authorization: Bearer <hub_token> — 401 with WWW-Authenticate if missing/invalid.
+ *   2. Resolve (workspace_id, sub) from the verified token.
+ *   3. Fetch the cached ConnectorRegistry (instant after first call).
+ *   4. Dispatch method directly — no MCP Server/Transport instantiation per request.
  *
- * Responsibilities:
- *   - Create and wire up an MCP Server for a given workspace on first connection.
- *   - Route subsequent requests to the correct existing session.
- *   - Handle session teardown cleanly.
+ * Handled methods:
+ *   initialize          → return server capabilities
+ *   tools/list          → registry.getAllTools()
+ *   tools/call          → registry.callTool() with per-user IdP token
+ *   notifications/*     → acknowledged silently (no response — notifications have no id)
  */
 
-import { Server }                        from '@modelcontextprotocol/sdk/server/index.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { randomUUID }                    from 'crypto';
+import { hubSessions, userTokens } from '../routes/oauth.js';
+
+const SERVER_INFO = { name: 'cms-mcp-hub', version: '1.0.0' };
+const PROTOCOL_VERSION = '2024-11-05';
 
 export class McpSessionManager {
-  /**
-   * @param {import('../workspaces/WorkspaceRegistry.js').WorkspaceRegistry} workspaceRegistry
-   * @param {object} logger
-   */
   constructor(workspaceRegistry, logger) {
     this._workspaceRegistry = workspaceRegistry;
     this._logger            = logger;
-    /** @type {Map<string, { server: Server, transport: StreamableHTTPServerTransport }>} */
-    this._sessions          = new Map(); // key: `${workspace_id}:${session_id}`
   }
 
-  // ── MCP Server factory ──────────────────────────────────────────────────────
+  // ── Bearer-token auth ───────────────────────────────────────────────────────
 
-  /**
-   * Create an MCP Server wired to the workspace's ConnectorRegistry.
-   * Registers handlers for tools/list and tools/call.
-   */
-  async _createServer(workspace_id) {
-    const registry = await this._workspaceRegistry.getRegistry(workspace_id, this._logger);
-    const server   = new Server(
-      { name: 'cms-mcp-hub', version: '1.0.0' },
-      { capabilities: { tools: {} } }
-    );
-
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: registry?.getAllTools() ?? [],
-    }));
-
-    server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
-      const { name, arguments: args } = params;
-      if (!registry) return { content: [{ type: 'text', text: 'No connectors configured' }], isError: true };
-      try {
-        return await registry.callTool(name, args ?? {});
-      } catch (err) {
-        return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
-      }
-    });
-
-    return server;
+  _verifyRequest(req, workspace_id) {
+    const auth  = req.headers['authorization'] ?? '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : null;
+    if (!token) return null;
+    const session = hubSessions.verify(token);
+    if (!session || session.workspace_id !== workspace_id) return null;
+    return session;
   }
 
-  // ── Request handlers ────────────────────────────────────────────────────────
+  // ── Main handler ────────────────────────────────────────────────────────────
 
-  /**
-   * handle — Route a POST or GET to the MCP endpoint.
-   *
-   * POST without Mcp-Session-Id → creates a new session (initialise handshake).
-   * POST / GET with Mcp-Session-Id → forwards to the matching existing session.
-   */
   async handle(req, res, workspace_id) {
-    const sessionId = req.headers['mcp-session-id'];
-    const key       = `${workspace_id}:${sessionId}`;
+    // ── 1. Auth ──────────────────────────────────────────────────────────────
+    const identity = this._verifyRequest(req, workspace_id);
+    if (!identity) {
+      const proto = req.headers['x-forwarded-proto'] ?? req.protocol;
+      const base  = `${proto}://${req.headers.host}/ws/${workspace_id}`;
+      res.setHeader(
+        'WWW-Authenticate',
+        `Bearer realm="CMS MCP Hub", resource_metadata="${base}/.well-known/oauth-protected-resource"`
+      );
+      return res.status(401).json({ error: 'Unauthorized — connect via OAuth first' });
+    }
 
+    const { sub } = identity;
+    const { jsonrpc, id, method, params } = req.body ?? {};
+    // Notifications have no id — acknowledge with 202, no body
+    if (id === undefined || id === null) {
+      if (method?.startsWith('notifications/')) return res.sendStatus(202);
+    }
+
+    const ok  = (result) => res.json({ jsonrpc: '2.0', id: id ?? null, result });
+    const err = (code, message) => res.json({ jsonrpc: '2.0', id: id ?? null, error: { code, message } });
+
+    // ── 2. Dispatch ──────────────────────────────────────────────────────────
     try {
-      if (sessionId && this._sessions.has(key)) {
-        // Existing session — route directly to its transport
-        await this._sessions.get(key).transport.handleRequest(req, res, req.body);
-
-      } else if (req.method === 'POST' && !sessionId) {
-        // New session — create server + transport, then handle the initialise request
-        const server    = await this._createServer(workspace_id);
-        const transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
+      if (method === 'initialize') {
+        return ok({
+          protocolVersion: PROTOCOL_VERSION,
+          capabilities:    { tools: {} },
+          serverInfo:      SERVER_INFO,
         });
-
-        transport.onclose = () => {
-          if (transport.sessionId) this._sessions.delete(`${workspace_id}:${transport.sessionId}`);
-        };
-
-        await server.connect(transport);
-        await transport.handleRequest(req, res, req.body);
-
-        if (transport.sessionId) {
-          this._sessions.set(`${workspace_id}:${transport.sessionId}`, { server, transport });
-        }
-
-      } else {
-        res.status(400).json({ error: 'Missing or unknown MCP session ID' });
       }
-    } catch (err) {
-      this._logger.error('[hub] MCP error:', err.message);
-      if (!res.headersSent) res.status(500).json({ error: err.message });
+
+      // Registry is cached after first call — no overhead on subsequent requests
+      const registry = await this._workspaceRegistry.getRegistry(workspace_id, this._logger);
+      if (method === 'tools/list') {
+        return ok({ tools: registry.getAllTools() });
+      }
+
+      if (method === 'tools/call') {
+        const { name, arguments: args } = params ?? {};
+        if (!name) return err(-32602, 'params.name is required');
+
+        const config      = this._workspaceRegistry.getConfig(workspace_id);
+        const accessToken = await userTokens.getValidToken(workspace_id, sub, config?.idp ?? null);
+        const result      = await registry.callTool(name, args ?? {}, accessToken);
+        return ok(result);
+      }
+
+      return err(-32601, `Method not supported: ${method}`);
+
+    } catch (e) {
+      this._logger.error('[hub] MCP error:', e);
+      return err(-32000, e);
     }
   }
 
-  /**
-   * close — Tear down an active session identified by the Mcp-Session-Id header.
-   */
-  async close(req, res, workspace_id) {
-    const key     = `${workspace_id}:${req.headers['mcp-session-id']}`;
-    const session = this._sessions.get(key);
-    if (session) {
-      await session.transport.close().catch(() => {});
-      this._sessions.delete(key);
-    }
+  /** DELETE /ws/:id/mcp — stateless; nothing to tear down server-side. */
+  close(_req, res) {
     res.sendStatus(200);
   }
 }
