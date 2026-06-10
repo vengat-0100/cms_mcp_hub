@@ -50,6 +50,7 @@ class DirectHttpClient {
     const controller = new AbortController();
     const timer      = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
+      console.log("Request body:", JSON.stringify({ jsonrpc: '2.0', id: ++this._id, method, params }));
       const headers = await this._buildHeaders(overrideToken);
       const res     = await fetch(this._url, {
         method:  'POST',
@@ -70,7 +71,7 @@ class DirectHttpClient {
   }
 
   listTools()                                      { return this._rpc('tools/list'); }
-  callTool({ name, arguments: args }, accessToken) { return this._rpc('tools/call', { name, arguments: args ?? {} }, accessToken ?? null); }
+  callTool({ name, arguments: args }, accessToken) { return this._rpc('tools/call', { name, properties: args ?? {} }, accessToken ?? null); }
   close()                                          {}
 }
 

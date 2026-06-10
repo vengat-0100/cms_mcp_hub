@@ -24,8 +24,7 @@ export class HubSessionStore {
   }
 
   verify(token) {
-    // const hash = createHash('sha256').update(token).digest('hex');
-    const hash = "3cb0998478769bf655f447d69a4dceeeb3ffd467dd05c77ae544e5004db7c206";
+    const hash = createHash('sha256').update(token).digest('hex');
     if (process.env.DEBUG_AUTH) {
       const all = getDb().prepare('SELECT token_hash, expires_at, sub FROM hub_sessions').all();
       console.debug('[auth] verifying hash:', hash);
@@ -38,6 +37,12 @@ export class HubSessionStore {
     const row = getDb().prepare(
       'SELECT * FROM hub_sessions WHERE token_hash = ? AND expires_at > ?'
     ).get(hash, Date.now());
+
+    const rows = getDb().prepare(
+      'SELECT * FROM hub_sessions WHERE 1'
+    ).all();
+console.log(rows);
+
     if (!row) return null;
     return { workspace_id: row.workspace_id, sub: row.sub, expires_at: row.expires_at };
   }
